@@ -49,11 +49,12 @@ fn trace(ray: Ray) -> Hit {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let pixel_distance = length((in.uv - 0.5) * vec2<f32>(camera.aspect_ratio, 1.0) * camera.vertical_view_height - (camera.player_position - camera.position));
+    let player_to_pixel = (in.uv - 0.5) * vec2<f32>(camera.aspect_ratio, 1.0) * camera.vertical_view_height - (camera.player_position - camera.position);
+    let pixel_distance = length(player_to_pixel);
 
     var ray: Ray;
     ray.origin = camera.player_position;
-    ray.direction = normalize(in.uv - 0.5);
+    ray.direction = player_to_pixel / pixel_distance;
 
     let hit = trace(ray);
     if hit.hit && hit.distance <= pixel_distance {

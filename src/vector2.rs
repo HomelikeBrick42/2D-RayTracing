@@ -1,9 +1,56 @@
+use std::ops::{Add, Div, Mul, Sub};
+
 use encase::impl_vector;
 
+#[derive(Default, Clone, Copy)]
 #[repr(C)]
 pub struct Vector2 {
     pub x: f32,
     pub y: f32,
+}
+
+impl Add for Vector2 {
+    type Output = Vector2;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Vector2 {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
+impl Sub for Vector2 {
+    type Output = Vector2;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Vector2 {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
+}
+
+impl Mul for Vector2 {
+    type Output = Vector2;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Vector2 {
+            x: self.x * rhs.x,
+            y: self.y * rhs.y,
+        }
+    }
+}
+
+impl Div for Vector2 {
+    type Output = Vector2;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        Vector2 {
+            x: self.x / rhs.x,
+            y: self.y / rhs.y,
+        }
+    }
 }
 
 impl AsRef<[f32; 2]> for Vector2 {

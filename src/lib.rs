@@ -2,14 +2,19 @@
 
 mod vector2;
 
+use std::collections::HashMap;
+
 pub use vector2::*;
 
 use anyhow::{bail, Result};
 use encase::{ShaderSize, ShaderType, UniformBuffer};
 use wgpu::include_wgsl;
 use winit::{
-    dpi::PhysicalSize,
-    event::{Event, WindowEvent},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{
+        ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode,
+        WindowEvent,
+    },
     event_loop::ControlFlow,
     window::Window,
 };
@@ -21,6 +26,12 @@ struct Camera {
     player_position: Vector2,
     aspect_ratio: f32,
     vertical_view_height: f32,
+}
+
+#[derive(Default)]
+struct MouseInfo {
+    position: Vector2,
+    buttons: HashMap<MouseButton, ElementState>,
 }
 
 #[allow(unused)]
@@ -37,6 +48,8 @@ pub struct Game {
     surface_config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface, // SAFETY: this needs to be before window so it gets destroyed first
     instance: wgpu::Instance,
+    key_states: HashMap<VirtualKeyCode, ElementState>,
+    mouse_info: MouseInfo,
     window: Window,
 }
 
@@ -187,6 +200,8 @@ impl Game {
             surface_config,
             surface,
             instance,
+            key_states: HashMap::new(),
+            mouse_info: MouseInfo::default(),
             window,
         })
     }
@@ -207,6 +222,76 @@ impl Game {
                     scale_factor: _,
                     new_inner_size: &mut new_size,
                 } => self.resize(new_size),
+                #[allow(deprecated)]
+                WindowEvent::KeyboardInput {
+                    device_id: _,
+                    // for ignoring the modifiers field
+                    input:
+                        KeyboardInput {
+                            scancode: _,
+                            state,
+                            virtual_keycode: Some(keycode),
+                            modifiers: _,
+                        },
+                    is_synthetic: _,
+                } => {
+                    self.key_states.insert(keycode, state);
+                }
+                // for ignoring the modifiers field
+                #[allow(deprecated)]
+                WindowEvent::CursorMoved {
+                    device_id: _,
+                    position,
+                    modifiers: _,
+                } => {
+                    let previous_position = std::mem::replace(
+                        &mut self.mouse_info.position,
+                        [position.x as f32, position.y as f32].into(),
+                    );
+                    if let Some(ElementState::Pressed) =
+                        self.mouse_info.buttons.get(&MouseButton::Right)
+                    {
+                        let movement = self.mouse_info.position - previous_position;
+                        let scale =
+                            self.surface_config.height as f32 / self.camera.vertical_view_height;
+                        self.camera.position.x -= movement.x / scale;
+                        self.camera.position.y += movement.y / scale;
+                    }
+                }
+                // for ignoring the modifiers field
+                #[allow(deprecated)]
+                WindowEvent::MouseInput {
+                    device_id: _,
+                    state,
+                    button,
+                    modifiers: _,
+                } => {
+                    self.mouse_info.buttons.insert(button, state);
+                }
+                // for ignoring the modifiers field
+                #[allow(deprecated)]
+                WindowEvent::MouseWheel {
+                    device_id: _,
+                    delta,
+                    phase: _,
+                    modifiers: _,
+                } => {
+                    let [_delta_x, delta_y] = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => [x, y],
+                        MouseScrollDelta::PixelDelta(PhysicalPosition { x, y }) => {
+                            [x as f32, y as f32]
+                        }
+                    };
+                    if delta_y > 0.0 {
+                        self.camera.vertical_view_height *= 0.9 * delta_y.abs();
+                    } else {
+                        self.camera.vertical_view_height /= 0.9 * delta_y.abs();
+                    }
+                }
+                WindowEvent::Focused(false) => {
+                    self.mouse_info.buttons.clear();
+                    self.key_states.clear();
+                }
                 _ => {}
             },
 
@@ -276,6 +361,24 @@ impl Game {
                 let dt = dt.as_secs_f64();
                 self.last_update_times.rotate_right(1);
                 self.last_update_times[0] = dt;
+
+                {
+                    const PLAYER_SPEED: f32 = 5.0;
+                    let ts = dt as f32;
+
+                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::W) {
+                        self.camera.player_position.y += PLAYER_SPEED * ts;
+                    }
+                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::S) {
+                        self.camera.player_position.y -= PLAYER_SPEED * ts;
+                    }
+                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::A) {
+                        self.camera.player_position.x -= PLAYER_SPEED * ts;
+                    }
+                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::D) {
+                        self.camera.player_position.x += PLAYER_SPEED * ts;
+                    }
+                }
 
                 {
                     let average_update_time = self.last_update_times.iter().sum::<f64>()
