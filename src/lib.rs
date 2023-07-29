@@ -1,6 +1,11 @@
 #![deny(elided_lifetimes_in_paths)]
 
+mod vector2;
+
+pub use vector2::*;
+
 use anyhow::{bail, Result};
+use encase::{ShaderSize, ShaderType, UniformBuffer};
 use wgpu::include_wgsl;
 use winit::{
     dpi::PhysicalSize,
@@ -9,9 +14,22 @@ use winit::{
     window::Window,
 };
 
+#[derive(ShaderType)]
+#[repr(C)]
+struct Camera {
+    position: Vector2,
+    player_position: Vector2,
+    aspect_ratio: f32,
+    vertical_view_height: f32,
+}
+
 #[allow(unused)]
 pub struct Game {
     last_update_time: std::time::Instant,
+    last_update_times: [f64; 20],
+    camera: Camera,
+    camera_uniform_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
     queue: wgpu::Queue,
     device: wgpu::Device,
@@ -75,10 +93,43 @@ impl Game {
 
         let shader = device.create_shader_module(include_wgsl!("./shader.wgsl"));
 
+        let camera_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Camera Uniform Buffer"),
+            size: <Camera as ShaderSize>::SHADER_SIZE.get(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(<Camera as ShaderSize>::SHADER_SIZE),
+                    },
+                    count: None,
+                }],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Camera Bind Group"),
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(
+                    camera_uniform_buffer.as_entire_buffer_binding(),
+                ),
+            }],
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -120,6 +171,15 @@ impl Game {
 
         Ok(Self {
             last_update_time: std::time::Instant::now(),
+            last_update_times: std::array::from_fn(|_| 0.0),
+            camera: Camera {
+                position: [0.0, 0.0].into(),
+                player_position: [0.0, 0.0].into(),
+                aspect_ratio: size.width as f32 / size.height as f32,
+                vertical_view_height: 10.0,
+            },
+            camera_uniform_buffer,
+            camera_bind_group,
             render_pipeline,
             queue,
             device,
@@ -161,6 +221,16 @@ impl Game {
                     Err(err) => bail!(err),
                 };
 
+                // Camera uniform buffer
+                {
+                    let mut buffer =
+                        UniformBuffer::new([0; <Camera as ShaderSize>::SHADER_SIZE.get() as _]);
+                    buffer.write(&self.camera).unwrap();
+                    let buffer = buffer.into_inner();
+                    self.queue
+                        .write_buffer(&self.camera_uniform_buffer, 0, &buffer);
+                }
+
                 let view = output
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
@@ -190,6 +260,7 @@ impl Game {
                     });
 
                     render_pass.set_pipeline(&self.render_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     render_pass.draw(0..4, 0..1);
                 }
                 self.queue.submit([encoder.finish()]);
@@ -203,11 +274,18 @@ impl Game {
                 self.last_update_time = time;
 
                 let dt = dt.as_secs_f64();
-                self.window.set_title(&format!(
-                    "FPS: {:.0}, Frame time: {:.3}ms",
-                    1.0 / dt,
-                    dt * 1000.0
-                ));
+                self.last_update_times.rotate_right(1);
+                self.last_update_times[0] = dt;
+
+                {
+                    let average_update_time = self.last_update_times.iter().sum::<f64>()
+                        / self.last_update_times.len() as f64;
+                    self.window.set_title(&format!(
+                        "FPS: {:.0}, Update time: {:.3}ms",
+                        1.0 / average_update_time,
+                        average_update_time * 1000.0
+                    ));
+                }
 
                 self.window.request_redraw();
             }
@@ -222,5 +300,8 @@ impl Game {
         self.surface_config.width = new_size.width.max(1);
         self.surface_config.height = new_size.height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
+
+        self.camera.aspect_ratio =
+            self.surface_config.width as f32 / self.surface_config.height as f32;
     }
 }
