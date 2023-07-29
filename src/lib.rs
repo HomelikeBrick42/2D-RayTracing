@@ -1,13 +1,14 @@
 #![deny(elided_lifetimes_in_paths)]
 
 mod vector2;
-
-use std::collections::HashMap;
+mod vector3;
 
 pub use vector2::*;
+pub use vector3::*;
 
 use anyhow::{bail, Result};
-use encase::{ShaderSize, ShaderType, UniformBuffer};
+use encase::{DynamicStorageBuffer, ShaderSize, ShaderType, UniformBuffer};
+use std::collections::HashMap;
 use wgpu::include_wgsl;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -22,15 +23,36 @@ use winit::{
 #[derive(ShaderType)]
 #[repr(C)]
 struct Camera {
-    position: Vector2,
-    player_position: Vector2,
+    position: Vector2<f32>,
+    player_position: Vector2<f32>,
     aspect_ratio: f32,
     vertical_view_height: f32,
 }
 
+#[derive(ShaderType)]
+#[repr(C)]
+struct Material {
+    color: Vector3<f32>,
+}
+
+#[derive(ShaderType)]
+#[repr(C)]
+struct Block {
+    material: u32,
+}
+
+#[derive(ShaderType)]
+#[repr(C)]
+struct Chunk<'a> {
+    position: Vector2<f32>,
+    size: Vector2<u32>,
+    #[size(runtime)]
+    blocks: &'a [Block],
+}
+
 #[derive(Default)]
 struct MouseInfo {
-    position: Vector2,
+    position: Vector2<f32>,
     buttons: HashMap<MouseButton, ElementState>,
 }
 
@@ -38,11 +60,16 @@ struct MouseInfo {
 pub struct Game {
     last_update_time: std::time::Instant,
     last_update_times: [f64; 20],
+    block_storage_buffer: wgpu::Buffer,
+    material_storage_start: wgpu::BufferAddress,
+    block_bind_group_layout: wgpu::BindGroupLayout,
+    block_bind_group: wgpu::BindGroup,
     camera: Camera,
     camera_uniform_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
     queue: wgpu::Queue,
+    limits: wgpu::Limits,
     device: wgpu::Device,
     adapter: wgpu::Adapter,
     surface_config: wgpu::SurfaceConfiguration,
@@ -139,10 +166,61 @@ impl Game {
             }],
         });
 
+        let material_storage_buffer_start = 0;
+        let block_storage_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Block Storage Buffer"),
+            size: <Chunk<'_> as ShaderType>::min_size().get()
+                + <&[Material] as ShaderType>::min_size().get(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let block_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Block Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let block_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Block Bind Group"),
+            layout: &block_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: block_storage_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: block_storage_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
+                bind_group_layouts: &[&camera_bind_group_layout, &block_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -185,6 +263,10 @@ impl Game {
         Ok(Self {
             last_update_time: std::time::Instant::now(),
             last_update_times: std::array::from_fn(|_| 0.0),
+            block_storage_buffer,
+            material_storage_start: material_storage_buffer_start,
+            block_bind_group,
+            block_bind_group_layout,
             camera: Camera {
                 position: [0.0, 0.0].into(),
                 player_position: [0.0, 0.0].into(),
@@ -195,6 +277,7 @@ impl Game {
             camera_bind_group,
             render_pipeline,
             queue,
+            limits: device.limits(),
             device,
             adapter,
             surface_config,
@@ -217,11 +300,13 @@ impl Game {
             Event::WindowEvent { event, window_id } if window_id == self.window.id() => match event
             {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+
                 WindowEvent::Resized(new_size)
                 | WindowEvent::ScaleFactorChanged {
                     scale_factor: _,
                     new_inner_size: &mut new_size,
-                } => self.resize(new_size),
+                } => self.resize(new_size)?,
+
                 #[allow(deprecated)]
                 WindowEvent::KeyboardInput {
                     device_id: _,
@@ -237,6 +322,7 @@ impl Game {
                 } => {
                     self.key_states.insert(keycode, state);
                 }
+
                 // for ignoring the modifiers field
                 #[allow(deprecated)]
                 WindowEvent::CursorMoved {
@@ -258,6 +344,7 @@ impl Game {
                         self.camera.position.y += movement.y / scale;
                     }
                 }
+
                 // for ignoring the modifiers field
                 #[allow(deprecated)]
                 WindowEvent::MouseInput {
@@ -268,6 +355,7 @@ impl Game {
                 } => {
                     self.mouse_info.buttons.insert(button, state);
                 }
+
                 // for ignoring the modifiers field
                 #[allow(deprecated)]
                 WindowEvent::MouseWheel {
@@ -282,16 +370,31 @@ impl Game {
                             [x as f32, y as f32]
                         }
                     };
+                    let old_scale =
+                        self.surface_config.height as f32 / self.camera.vertical_view_height;
                     if delta_y > 0.0 {
                         self.camera.vertical_view_height *= 0.9 * delta_y.abs();
                     } else {
                         self.camera.vertical_view_height /= 0.9 * delta_y.abs();
                     }
+                    let new_scale =
+                        self.surface_config.height as f32 / self.camera.vertical_view_height;
+
+                    let mouse_position_centered: Vector2<_> = [
+                        self.mouse_info.position.x - self.surface_config.width as f32 * 0.5,
+                        self.surface_config.height as f32 * 0.5 - self.mouse_info.position.y,
+                    ]
+                    .into();
+                    self.camera.position += (mouse_position_centered
+                        / [old_scale, old_scale].into())
+                        - (mouse_position_centered / [new_scale, new_scale].into());
                 }
+
                 WindowEvent::Focused(false) => {
                     self.mouse_info.buttons.clear();
                     self.key_states.clear();
                 }
+
                 _ => {}
             },
 
@@ -306,49 +409,11 @@ impl Game {
                     Err(err) => bail!(err),
                 };
 
-                // Camera uniform buffer
-                {
-                    let mut buffer =
-                        UniformBuffer::new([0; <Camera as ShaderSize>::SHADER_SIZE.get() as _]);
-                    buffer.write(&self.camera).unwrap();
-                    let buffer = buffer.into_inner();
-                    self.queue
-                        .write_buffer(&self.camera_uniform_buffer, 0, &buffer);
-                }
-
                 let view = output
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("Render Encoder"),
-                        });
-                {
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Render Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 1.0,
-                                    g: 0.0,
-                                    b: 1.0,
-                                    a: 1.0,
-                                }),
-                                store: true,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                    });
-
-                    render_pass.set_pipeline(&self.render_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.draw(0..4, 0..1);
-                }
-                self.queue.submit([encoder.finish()]);
+                self.render(view)?;
 
                 output.present();
             }
@@ -363,24 +428,6 @@ impl Game {
                 self.last_update_times[0] = dt;
 
                 {
-                    const PLAYER_SPEED: f32 = 5.0;
-                    let ts = dt as f32;
-
-                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::W) {
-                        self.camera.player_position.y += PLAYER_SPEED * ts;
-                    }
-                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::S) {
-                        self.camera.player_position.y -= PLAYER_SPEED * ts;
-                    }
-                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::A) {
-                        self.camera.player_position.x -= PLAYER_SPEED * ts;
-                    }
-                    if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::D) {
-                        self.camera.player_position.x += PLAYER_SPEED * ts;
-                    }
-                }
-
-                {
                     let average_update_time = self.last_update_times.iter().sum::<f64>()
                         / self.last_update_times.len() as f64;
                     self.window.set_title(&format!(
@@ -389,6 +436,8 @@ impl Game {
                         average_update_time * 1000.0
                     ));
                 }
+
+                self.update(dt as f32)?;
 
                 self.window.request_redraw();
             }
@@ -399,12 +448,142 @@ impl Game {
         Ok(())
     }
 
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    fn update(&mut self, ts: f32) -> Result<()> {
+        const PLAYER_SPEED: f32 = 5.0;
+
+        if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::W) {
+            self.camera.player_position.y += PLAYER_SPEED * ts;
+        }
+        if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::S) {
+            self.camera.player_position.y -= PLAYER_SPEED * ts;
+        }
+        if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::A) {
+            self.camera.player_position.x -= PLAYER_SPEED * ts;
+        }
+        if let Some(ElementState::Pressed) = self.key_states.get(&VirtualKeyCode::D) {
+            self.camera.player_position.x += PLAYER_SPEED * ts;
+        }
+
+        Ok(())
+    }
+
+    fn render(&mut self, view: wgpu::TextureView) -> Result<()> {
+        // Camera uniform buffer
+        {
+            let mut buffer =
+                UniformBuffer::new([0; <Camera as ShaderSize>::SHADER_SIZE.get() as _]);
+            buffer.write(&self.camera)?;
+            let buffer = buffer.into_inner();
+            self.queue
+                .write_buffer(&self.camera_uniform_buffer, 0, &buffer);
+        }
+
+        // Set chunk data
+        {
+            let mut buffer = Vec::new();
+
+            let mut chunk_buffer = DynamicStorageBuffer::new(&mut buffer);
+            chunk_buffer.write(&Chunk {
+                position: [0.0, 0.0].into(),
+                size: [0, 0].into(),
+                blocks: &[],
+            })?;
+
+            self.material_storage_start = chunk_buffer.into_inner().len().try_into()?;
+            let align = self.material_storage_start
+                % self.limits.min_storage_buffer_offset_alignment as wgpu::BufferAddress;
+            if align != 0 {
+                let grow =
+                    self.limits.min_storage_buffer_offset_alignment as wgpu::BufferAddress - align;
+                self.material_storage_start += grow;
+                buffer.resize(self.material_storage_start as usize, 0);
+            }
+
+            let mut material_buffer = DynamicStorageBuffer::new(&mut buffer);
+            material_buffer.write(&(&[] as &[Material]))?;
+
+            if buffer.len()
+                > (self.block_storage_buffer.size() - <&[Material] as ShaderType>::min_size().get())
+                    as usize
+            {
+                self.block_storage_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Block Storage Buffer"),
+                    size: wgpu::BufferAddress::try_from(buffer.len())?
+                        + <&[Material] as ShaderType>::min_size().get(),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+
+            // TODO: only do this if the blocks have changed
+            self.block_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Block Bind Group"),
+                layout: &self.block_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.block_storage_buffer,
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.block_storage_buffer,
+                            offset: self.material_storage_start,
+                            size: None,
+                        }),
+                    },
+                ],
+            });
+            self.queue
+                .write_buffer(&self.block_storage_buffer, 0, &buffer);
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.block_bind_group, &[]);
+            render_pass.draw(0..4, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
+
+        Ok(())
+    }
+
+    fn resize(&mut self, new_size: PhysicalSize<u32>) -> Result<()> {
         self.surface_config.width = new_size.width.max(1);
         self.surface_config.height = new_size.height.max(1);
         self.surface.configure(&self.device, &self.surface_config);
 
         self.camera.aspect_ratio =
             self.surface_config.width as f32 / self.surface_config.height as f32;
+
+        Ok(())
     }
 }
