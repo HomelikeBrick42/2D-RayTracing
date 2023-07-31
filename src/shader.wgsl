@@ -72,10 +72,7 @@ fn trace(ray: Ray, max_distance: f32) -> Hit {
     let ray_chunk_offset = chunk.position - half_chunk_size;
     ray.origin -= ray_chunk_offset;
 
-    let ray_unit_step_size = vec2<f32>(
-        sqrt(1.0 + (ray.direction.y / ray.direction.x) * (ray.direction.y / ray.direction.x)),
-        sqrt(1.0 + (ray.direction.x / ray.direction.y) * (ray.direction.x / ray.direction.y)),
-    );
+    let ray_unit_step_size = vec2<f32>(abs(1.0 / ray.direction.x), abs(1.0 / ray.direction.y));
 
     var map_check = vec2<i32>(floor(ray.origin));
     var ray_axis_length: vec2<f32>;
