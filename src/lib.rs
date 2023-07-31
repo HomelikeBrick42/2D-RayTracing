@@ -60,6 +60,9 @@ struct MouseInfo {
 pub struct Game {
     last_update_time: std::time::Instant,
     last_update_times: [f64; 20],
+    materials: Vec<Material>,
+    blocks: Vec<Block>,
+    blocks_width: u32,
     block_storage_buffer: wgpu::Buffer,
     material_storage_start: wgpu::BufferAddress,
     block_bind_group_layout: wgpu::BindGroupLayout,
@@ -263,13 +266,31 @@ impl Game {
         Ok(Self {
             last_update_time: std::time::Instant::now(),
             last_update_times: std::array::from_fn(|_| 0.0),
+            materials: vec![
+                Material {
+                    color: [1.0, 0.0, 0.0].into(),
+                },
+                Material {
+                    color: [0.0, 1.0, 0.0].into(),
+                },
+                Material {
+                    color: [0.0, 0.0, 1.0].into(),
+                },
+            ],
+            blocks: vec![
+                Block { material: 0 },
+                Block { material: 1 },
+                Block { material: 2 },
+                Block { material: u32::MAX },
+            ],
+            blocks_width: 2,
             block_storage_buffer,
             material_storage_start: material_storage_buffer_start,
             block_bind_group,
             block_bind_group_layout,
             camera: Camera {
                 position: [0.0, 0.0].into(),
-                player_position: [0.0, 0.0].into(),
+                player_position: [0.5, 0.5].into(),
                 aspect_ratio: size.width as f32 / size.height as f32,
                 vertical_view_height: 10.0,
             },
@@ -482,11 +503,21 @@ impl Game {
         {
             let mut buffer = Vec::new();
 
-            let mut chunk_buffer = DynamicStorageBuffer::new(&mut buffer);
+            let mut chunk_buffer: DynamicStorageBuffer<&mut Vec<u8>> =
+                DynamicStorageBuffer::new(&mut buffer);
+            assert!(
+                self.blocks.is_empty() || (self.blocks.len() % self.blocks_width as usize == 0)
+            );
             chunk_buffer.write(&Chunk {
                 position: [0.0, 0.0].into(),
-                size: [0, 0].into(),
-                blocks: &[],
+                size: [
+                    self.blocks_width,
+                    u32::try_from(self.blocks.len())?
+                        .checked_div(self.blocks_width)
+                        .unwrap_or(0),
+                ]
+                .into(),
+                blocks: &self.blocks,
             })?;
 
             self.material_storage_start = chunk_buffer.into_inner().len().try_into()?;
@@ -500,7 +531,8 @@ impl Game {
             }
 
             let mut material_buffer = DynamicStorageBuffer::new(&mut buffer);
-            material_buffer.write(&(&[] as &[Material]))?;
+            material_buffer.set_offset(self.material_storage_start);
+            material_buffer.write(&&self.materials)?;
 
             if buffer.len()
                 > (self.block_storage_buffer.size() - <&[Material] as ShaderType>::min_size().get())
