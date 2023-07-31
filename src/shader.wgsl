@@ -77,7 +77,7 @@ fn trace(ray: Ray, max_distance: f32) -> Hit {
         sqrt(1.0 + (ray.direction.x / ray.direction.y) * (ray.direction.x / ray.direction.y)),
     );
 
-    var map_check = vec2<i32>(ray.origin);
+    var map_check = vec2<i32>(floor(ray.origin));
     var ray_axis_length: vec2<f32>;
     var step: vec2<i32>;
 
@@ -94,6 +94,14 @@ fn trace(ray: Ray, max_distance: f32) -> Hit {
     } else {
         step.y = 1;
         ray_axis_length.y = (f32(map_check.y + 1) - ray.origin.y) * ray_unit_step_size.y;
+    }
+
+    if ray_axis_length.x < ray_axis_length.y {
+        hit.distance = ray_axis_length.x;
+        hit.normal = vec2<f32>(f32(-step.x), 0.0);
+    } else {
+        hit.distance = ray_axis_length.y;
+        hit.normal = vec2<f32>(0.0, f32(-step.y));
     }
 
     while !hit.hit && hit.distance <= max_distance {
@@ -144,8 +152,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let hit = trace(ray, pixel_distance);
     if hit.hit {
-        return vec4<f32>((hit.point * 0.5 + 0.5) * 0.5, 0.0, 1.0);
-        // return vec4<f32>(materials[hit.material].color, 1.0);
+        return vec4<f32>(materials[hit.material].color, 1.0);
     } else {
         return vec4<f32>(fract(pixel_world_coord), 0.0, 1.0);
     }
