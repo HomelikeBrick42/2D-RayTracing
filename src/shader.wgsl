@@ -102,6 +102,11 @@ fn trace(ray: Ray, max_distance: f32) -> Hit {
     }
 
     while !hit.hit && hit.distance <= max_distance {
+        // We are outside the bounds and the ray is facing away from the map
+        if ((step.x < 0 && map_check.x < 0) || (step.x > 0 && map_check.x >= i32(chunk.size.x))) || ((step.y < 0 && map_check.y < 0) || (step.y > 0 && map_check.y >= i32(chunk.size.y))) {
+            break;
+        }
+
         if all(vec2<i32>(0, 0) <= map_check) && all(map_check < vec2<i32>(chunk.size)) {
             hit.material = chunk.blocks[u32(map_check.x) + u32(map_check.y) * chunk.size.x].material;
             if hit.material != INVALID_MATERIAL {
