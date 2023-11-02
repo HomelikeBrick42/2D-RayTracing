@@ -1,0 +1,18 @@
+[package]
+name = "raytracing_2d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1.0.75", features = ["backtrace"] }
+derive_more = "0.99.17"
+# default features for eframe but without glow
+eframe = { version = "0.23.0", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+encase = "0.6.1"
+rand = "0.8.5"
