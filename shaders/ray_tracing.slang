@@ -1,3 +1,13 @@
+struct Camera
+{
+    float2 position;
+    float aspect;
+    float height;
+}
+
+[vk::binding(0, 0)]
+uniform Camera camera;
+
 struct VertexOutput
 {
     float4 clip_position : SV_Position;
@@ -23,7 +33,10 @@ VertexOutput vertex(uint vertex_index: SV_VertexID)
 [shader("fragment")]
 FragmentOutput fragment(VertexOutput in)
 {
+    var world_position = (in.uv * 2.0 - 1.0) * float2(camera.aspect, 1.0) * camera.height;
+    world_position += camera.position;
+
     var out : FragmentOutput;
-    out.color = float4(in.uv, 0.0, 1.0);
+    out.color = float4(world_position, 0.0, 1.0);
     return out;
 }

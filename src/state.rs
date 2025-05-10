@@ -1,14 +1,62 @@
+use crate::gpu_buffers::{BufferCreationInfo, BufferGroup, FixedSizeBuffer};
+use encase::ShaderType;
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
 };
 
+struct Camera {
+    position: cgmath::Vector2<f32>,
+    height: f32,
+}
+
+#[derive(ShaderType)]
+struct GpuCamera {
+    position: cgmath::Vector2<f32>,
+    height: f32,
+    aspect: f32,
+}
+
+impl GpuCamera {
+    fn from_camera(camera: &Camera, aspect: f32) -> Self {
+        let Camera { position, height } = *camera;
+        Self {
+            position,
+            height,
+            aspect,
+        }
+    }
+}
+
 pub struct State {
+    camera: Camera,
+    camera_buffer: BufferGroup<(FixedSizeBuffer<GpuCamera>,)>,
+
     ray_tracing_render_pipeline: wgpu::RenderPipeline,
 }
 
 impl State {
-    pub fn new(device: &wgpu::Device, #[expect(unused)] queue: &wgpu::Queue) -> State {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> State {
+        let camera = Camera {
+            position: cgmath::vec2(0.0, 0.0),
+            height: 1.0,
+        };
+        let camera_buffer = BufferGroup::new(
+            device,
+            "Camera Bind Group",
+            (BufferCreationInfo {
+                buffer: FixedSizeBuffer::new(
+                    device,
+                    queue,
+                    "Camera Buffer",
+                    wgpu::BufferUsages::UNIFORM,
+                    &GpuCamera::from_camera(&camera, 1.0),
+                ),
+                binding_type: wgpu::BufferBindingType::Uniform,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+            },),
+        );
+
         let ray_tracing_shader = unsafe {
             device.create_shader_module_passthrough(wgpu::include_spirv_raw!(concat!(
                 env!("OUT_DIR"),
@@ -18,7 +66,7 @@ impl State {
         let ray_tracing_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Ray Tracing Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[camera_buffer.bind_group_layout()],
                 push_constant_ranges: &[],
             });
         let ray_tracing_render_pipeline =
@@ -64,6 +112,9 @@ impl State {
             });
 
         State {
+            camera,
+            camera_buffer,
+
             ray_tracing_render_pipeline,
         }
     }
@@ -109,8 +160,16 @@ impl State {
     }
 
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) {
-        #[expect(unused)]
         let wgpu::Extent3d { width, height, .. } = texture.size();
+
+        self.camera_buffer.write(
+            device,
+            queue,
+            (Some(&GpuCamera::from_camera(
+                &self.camera,
+                width as f32 / height as f32,
+            )),),
+        );
 
         let mut command_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Main Rendering Encoder"),
@@ -137,6 +196,7 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.ray_tracing_render_pipeline);
+            render_pass.set_bind_group(0, self.camera_buffer.bind_group(), &[]);
             render_pass.draw(0..4, 0..1);
         }
 
