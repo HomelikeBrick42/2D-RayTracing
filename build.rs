@@ -15,6 +15,10 @@ fn main() {
 
         assert!(entry.file_type().unwrap().is_file());
 
+        if entry.file_name() == "chunk.slang" {
+            continue;
+        }
+
         let path = entry.path();
         assert!(path.extension().unwrap() == "slang");
 
@@ -24,16 +28,24 @@ fn main() {
             .arg(path)
             .arg("-o")
             .arg(out_filepath)
-            .args(["-fvk-use-entrypoint-name", "-emit-spirv-directly"])
+            .args([
+                "-fvk-use-entrypoint-name",
+                "-emit-spirv-directly",
+                "-Ishaders/include",
+            ])
             .spawn()
             .unwrap();
-        processes.push(process);
+        processes.push((process, entry.file_name()));
     }
 
-    for process in processes {
+    for (process, name) in processes {
         let output = process.wait_with_output().unwrap();
         if !output.status.success() {
-            panic!("{}", String::from_utf8_lossy(&output.stderr))
+            panic!(
+                "{} {}",
+                name.to_str().unwrap(),
+                String::from_utf8_lossy(&output.stderr)
+            )
         }
     }
 }
