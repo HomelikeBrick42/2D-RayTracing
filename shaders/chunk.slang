@@ -1,0 +1,70 @@
+static const int CHUNK_SIZE = 8;
+
+struct Cell
+{
+    float3 color;
+    uint solid;
+}
+
+struct Chunk
+{
+    Cell cells[CHUNK_SIZE * CHUNK_SIZE];
+}
+
+typealias Chunks = StructuredBuffer<Chunk, Std430DataLayout>;
+
+struct Ray
+{
+    float2 origin;
+    float2 direction;
+}
+
+struct Hit
+{
+    float distance;
+    float3 color;
+}
+
+Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_distance)
+{
+    var hit : Hit;
+    hit.distance = 0;
+
+    let step_sizes = 1.0 / abs(ray.direction);
+    let step_dir = int2(sign(ray.direction));
+    var next_dist = (float2(step_dir) * 0.5 + 0.5 - fract(ray.origin)) / ray.direction;
+
+    var voxel_pos = int2(floor(ray.origin));
+    while (true)
+    {
+        let closest_dist = min(next_dist.x, next_dist.y);
+        hit.distance += closest_dist;
+
+        if (all(voxel_pos >= int2(0)) && all(voxel_pos < int2(CHUNK_SIZE)))
+        {
+            let index = int(voxel_pos.x) + int(voxel_pos.y) * CHUNK_SIZE;
+            let cell = chunks[chunk_index].cells[index];
+
+            if (hit.distance >= max_distance)
+            {
+                hit.color = chunks[chunk_index].cells[index].color;
+                return hit;
+            }
+
+            if (cell.solid != 0)
+            {
+                hit.color = chunks[chunk_index].cells[index].color;
+                return hit;
+            }
+        }
+        else
+        {
+            return none;
+        }
+
+        let step_axis = int2(next_dist == float2(closest_dist));
+        voxel_pos += step_axis * step_dir;
+        next_dist -= closest_dist;
+        next_dist += step_sizes * float2(step_axis);
+    }
+}

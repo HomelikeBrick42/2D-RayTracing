@@ -1,3 +1,5 @@
+import chunk;
+
 struct Camera
 {
     float2 position;
@@ -8,21 +10,8 @@ struct Camera
 [vk::binding(0, 0)]
 uniform Camera camera;
 
-static const int CHUNK_SIZE = 2;
-
-struct Cell
-{
-    float3 color;
-}
-
-struct Chunk
-{
-    Cell cells[CHUNK_SIZE * CHUNK_SIZE];
-    float2 position;
-}
-
 [vk::binding(0, 1)]
-StructuredBuffer<Chunk, Std430DataLayout> chunks;
+Chunks chunks;
 
 struct VertexOutput
 {
@@ -57,18 +46,15 @@ FragmentOutput fragment(VertexOutput in)
     var world_position = in.uv * float2(camera.aspect, 1.0) * camera.half_height;
     world_position += camera.position;
 
+    let camera_to_world = world_position - camera.position;
+    let camera_to_world_distance = length(camera_to_world);
+
+    var ray : Ray;
+    ray.origin = camera.position;
+    ray.direction = camera_to_world / camera_to_world_distance;
+    if (let hit = trace_chunk(chunks, 0, ray, camera_to_world_distance))
     {
-        let chunk = chunks[0];
-        let chunk_relative_position = int2(floor(world_position - chunk.position));
-        if ((chunk_relative_position.x >= 0) && (chunk_relative_position.x < CHUNK_SIZE) && (chunk_relative_position.y >= 0) && (chunk_relative_position.y < CHUNK_SIZE))
-        {
-            int index = chunk_relative_position.x + chunk_relative_position.y * CHUNK_SIZE;
-            out.color.xyz = chunk.cells[index].color;
-        }
-        else
-        {
-            out.color.xz = 1.0;
-        }
+        out.color.xyz = hit.color;
     }
 
     return out;
