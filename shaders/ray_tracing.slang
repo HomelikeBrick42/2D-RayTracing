@@ -8,7 +8,7 @@ struct Camera
 }
 
 [vk::binding(0, 0)]
-uniform Camera camera;
+ConstantBuffer<Camera> camera;
 
 [vk::binding(0, 1)]
 Chunks chunks;

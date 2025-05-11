@@ -1,6 +1,7 @@
 use crate::gpu_buffers::{BufferCreationInfo, BufferGroup, DynamicBuffer, FixedSizeBuffer};
 use cgmath::InnerSpace;
 use encase::ShaderType;
+use noise::{NoiseFn, Perlin, Simplex};
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
@@ -23,7 +24,7 @@ struct GpuCamera {
     aspect: f32,
 }
 
-const CHUNK_SIZE: usize = 8;
+const CHUNK_SIZE: usize = 128;
 
 #[derive(ShaderType)]
 struct Cell {
@@ -69,7 +70,7 @@ impl State {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> State {
         let camera = Camera {
             position: cgmath::vec2(CHUNK_SIZE as f32 * 0.5, CHUNK_SIZE as f32 * 0.5),
-            height: 10.0,
+            height: 128.0,
 
             up: false,
             down: false,
@@ -92,10 +93,29 @@ impl State {
             },),
         );
 
+        let perlin = Simplex::new(rand::random());
+        let r = Simplex::new(rand::random());
+        let g = Simplex::new(rand::random());
+        let b = Simplex::new(rand::random());
         let chunks = vec![Chunk {
-            cells: std::array::from_fn(|_| Cell {
-                color: cgmath::vec3(rand::random(), rand::random(), rand::random()),
-                solid: (rand::random::<f32>() < 0.1) as _,
+            cells: std::array::from_fn(|i| {
+                let x = i % CHUNK_SIZE;
+                let y = i / CHUNK_SIZE;
+
+                const SCALE: f64 = 0.051232;
+
+                let perlin_value = perlin.get([x as f64 * SCALE, y as f64 * SCALE]);
+                let r = r.get([x as f64 * SCALE, y as f64 * SCALE]) * 0.5 + 0.5;
+                let g = g.get([x as f64 * SCALE, y as f64 * SCALE]) * 0.5 + 0.5;
+                let b = b.get([x as f64 * SCALE, y as f64 * SCALE]) * 0.5 + 0.5;
+                // if rand::random_bool(0.1) {
+                //     println!("{x}, {y} = {perlin_value}");
+                // }
+
+                Cell {
+                    color: cgmath::vec3(r as f32, g as f32, b as f32),
+                    solid: (perlin_value > 0.0) as _,
+                }
             }),
         }];
         let chunk_buffer = BufferGroup::new(
@@ -185,7 +205,7 @@ impl State {
     pub fn update(&mut self, dt: std::time::Duration) {
         let ts = dt.as_secs_f32();
 
-        const CAMERA_SPEED: f32 = 2.0;
+        const CAMERA_SPEED: f32 = 20.0;
 
         let mut move_direction = cgmath::vec2(0.0, 0.0);
         if self.camera.up {
