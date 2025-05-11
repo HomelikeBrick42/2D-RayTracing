@@ -29,6 +29,7 @@ Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_dis
 {
     var hit : Hit;
     hit.distance = 0;
+    hit.color = 1.0;
 
     let step_sizes = 1.0 / abs(ray.direction);
     let step_dir = int2(sign(ray.direction));
@@ -47,12 +48,6 @@ Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_dis
             let index = int(voxel_pos.x) + int(voxel_pos.y) * CHUNK_SIZE;
             let cell = chunks[chunk_index].cells[index];
 
-            if (hit.distance >= max_distance)
-            {
-                hit.color = chunks[chunk_index].cells[index].color;
-                return hit;
-            }
-
             if (cell.solid != 0)
             {
                 if (all(next_voxel_pos >= int2(0)) && all(next_voxel_pos < int2(CHUNK_SIZE)))
@@ -62,9 +57,16 @@ Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_dis
 
                     if (next_cell.solid == 0)
                     {
-                        return none;
+                        hit.color *= 0.5;
                     }
                 }
+            }
+
+            if (hit.distance >= max_distance)
+            {
+                hit.distance = max_distance;
+                hit.color *= chunks[chunk_index].cells[index].color;
+                return hit;
             }
         }
         else
