@@ -23,7 +23,7 @@ struct GpuCamera {
     aspect: f32,
 }
 
-const CHUNK_SIZE: usize = 8;
+const CHUNK_SIZE: usize = 128;
 
 #[derive(ShaderType)]
 struct Cell {
@@ -33,7 +33,13 @@ struct Cell {
 
 #[derive(ShaderType)]
 struct Chunk {
-    cells: [Cell; CHUNK_SIZE * CHUNK_SIZE],
+    cells: Box<[Cell; CHUNK_SIZE * CHUNK_SIZE]>,
+}
+
+fn box_with<T>(f: impl FnOnce() -> T) -> Box<T> {
+    let mut b = Box::new_uninit();
+    b.write(f());
+    unsafe { b.assume_init() }
 }
 
 impl GpuCamera {
@@ -69,7 +75,7 @@ impl State {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> State {
         let camera = Camera {
             position: cgmath::vec2(CHUNK_SIZE as f32 * 0.5, CHUNK_SIZE as f32 * 0.5),
-            height: 10.0,
+            height: 20.0,
 
             up: false,
             down: false,
@@ -93,9 +99,11 @@ impl State {
         );
 
         let chunks = vec![Chunk {
-            cells: std::array::from_fn(|_| Cell {
-                color: cgmath::vec3(rand::random(), rand::random(), rand::random()),
-                solid: (rand::random::<f32>() < 0.1) as _,
+            cells: box_with(|| {
+                std::array::from_fn(|_| Cell {
+                    color: cgmath::vec3(rand::random(), rand::random(), rand::random()),
+                    solid: (rand::random::<f32>() < 0.1) as _,
+                })
             }),
         }];
         let chunk_buffer = BufferGroup::new(

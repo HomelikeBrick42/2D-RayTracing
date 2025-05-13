@@ -1,4 +1,4 @@
-static const int CHUNK_SIZE = 8;
+static const int CHUNK_SIZE = 128;
 
 struct Cell
 {
@@ -35,8 +35,9 @@ Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_dis
     let step_dir = int2(sign(ray.direction));
     var next_dist = (float2(step_dir) * 0.5 + 0.5 - fract(ray.origin)) / ray.direction;
 
+    var first_hit_cell : Optional<int2> = none;
     var voxel_pos = int2(floor(ray.origin));
-    while (true)
+    for (var i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++)
     {
         let closest_dist = min(next_dist.x, next_dist.y);
         hit.distance += closest_dist;
@@ -48,34 +49,44 @@ Optional<Hit> trace_chunk(Chunks chunks, int chunk_index, Ray ray, float max_dis
             let index = int(voxel_pos.x) + int(voxel_pos.y) * CHUNK_SIZE;
             let cell = chunks[chunk_index].cells[index];
 
-            if (cell.solid != 0)
-            {
-                if (all(next_voxel_pos >= int2(0)) && all(next_voxel_pos < int2(CHUNK_SIZE)))
-                {
-                    let next_index = int(next_voxel_pos.x) + int(next_voxel_pos.y) * CHUNK_SIZE;
-                    let next_cell = chunks[chunk_index].cells[next_index];
-
-                    if (next_cell.solid == 0)
-                    {
-                        hit.color *= 0.5;
-                    }
-                }
-            }
+            if (cell.solid != 0 && !first_hit_cell.hasValue)
+                first_hit_cell = voxel_pos;
 
             if (hit.distance >= max_distance)
             {
                 hit.distance = max_distance;
-                hit.color *= chunks[chunk_index].cells[index].color;
+
+                if (first_hit_cell.hasValue)
+                {
+                    let cell_center_pos = float2(first_hit_cell.value) + 0.5;
+                    let hit_pos = ray.origin + ray.direction * hit.distance;
+
+                    let distance = max(abs(hit_pos.x - cell_center_pos.x), abs(hit_pos.y - cell_center_pos.y));
+                    if (distance > 0.7)
+                    {
+                        return none;
+                    }
+
+                    let first_hit_index = int(first_hit_cell.value.x) + int(first_hit_cell.value.y) * CHUNK_SIZE;
+                    hit.color *= chunks[chunk_index].cells[first_hit_index].color;
+                }
+                else
+                {
+                    hit.color *= chunks[chunk_index].cells[index].color;
+                }
+
                 return hit;
             }
         }
         else
         {
-            return none;
+            break;
         }
 
         voxel_pos = next_voxel_pos;
         next_dist -= closest_dist;
         next_dist += step_sizes * float2(step_axis);
     }
+
+    return none;
 }
